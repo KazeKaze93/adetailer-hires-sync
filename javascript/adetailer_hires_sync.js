@@ -1,20 +1,10 @@
 var autoEnabledByScript = false;
-var generateObserver = null;
-var generationStarted = false;
+var interruptObserver = null;
 
-function getGenerateState(button) {
-    if (!button) {
-        return "";
-    }
-    var valueText = typeof button.value === "string" ? button.value : "";
-    var contentText = button.textContent || "";
-    return String(valueText || contentText).replace(/^\s+|\s+$/g, "").toLowerCase();
-}
-
-function disconnectGenerateObserver() {
-    if (generateObserver) {
-        generateObserver.disconnect();
-        generateObserver = null;
+function disconnectInterruptObserver() {
+    if (interruptObserver) {
+        interruptObserver.disconnect();
+        interruptObserver = null;
     }
 }
 
@@ -23,7 +13,7 @@ function handleGenerationComplete() {
         var root = gradioApp();
         if (!root) {
             autoEnabledByScript = false;
-            disconnectGenerateObserver();
+            disconnectInterruptObserver();
             return;
         }
 
@@ -34,40 +24,34 @@ function handleGenerationComplete() {
     }
 
     autoEnabledByScript = false;
-    generationStarted = false;
-    disconnectGenerateObserver();
+    disconnectInterruptObserver();
 }
 
-function armGenerateObserver() {
+function armInterruptObserver() {
     var root = gradioApp();
     if (!root) {
         return;
     }
 
-    var generateButton = root.querySelector("#txt2img_generate");
-    if (!generateButton) {
+    var interruptBtn = root.querySelector("#txt2img_interrupt");
+    if (!interruptBtn) {
         return;
     }
 
-    generationStarted = false;
-    disconnectGenerateObserver();
+    disconnectInterruptObserver();
 
-    generateObserver = new MutationObserver(function () {
-        var state = getGenerateState(generateButton);
-        if (state === "stop" || state === "interrupt") {
-            generationStarted = true;
+    interruptObserver = new MutationObserver(function () {
+        if (interruptBtn.style.display === "block") {
             return;
         }
-        if (state === "generate" && generationStarted && autoEnabledByScript) {
+        if (interruptBtn.style.display === "none" && autoEnabledByScript) {
             handleGenerationComplete();
         }
     });
 
-    generateObserver.observe(generateButton, {
-        childList: true,
-        subtree: true,
+    interruptObserver.observe(interruptBtn, {
         attributes: true,
-        characterData: true
+        attributeFilter: ["style"]
     });
 }
 
@@ -96,6 +80,6 @@ onUiLoaded(function () {
             autoEnabledByScript = true;
         }
 
-        armGenerateObserver();
+        armInterruptObserver();
     });
 });
