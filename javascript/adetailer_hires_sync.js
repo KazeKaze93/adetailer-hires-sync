@@ -341,7 +341,7 @@ onUiLoaded(function () {
     setupGalleryObserver(gallery);
     injectGallerySelectionCheckboxes();
 
-    hiresButton.addEventListener("click", function () {
+    hiresButton.addEventListener("click", function (ev) {
         if (isProcessingQueue) {
             return;
         }
@@ -372,6 +372,8 @@ onUiLoaded(function () {
         });
         processingQueue = sorted.slice();
         isProcessingQueue = true;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
         processNextInQueue();
     });
 });
