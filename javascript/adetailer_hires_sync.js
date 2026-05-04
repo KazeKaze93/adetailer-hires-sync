@@ -309,11 +309,14 @@ function armInterruptObserver() {
 
     disconnectInterruptObserver();
 
+    var generationStarted = false;
+
     interruptObserver = new MutationObserver(function () {
         if (interruptBtn.style.display === "block") {
+            generationStarted = true;
             return;
         }
-        if (interruptBtn.style.display === "none") {
+        if (interruptBtn.style.display === "none" && generationStarted) {
             if (autoEnabledByScript || isProcessingQueue) {
                 handleGenerationComplete();
             }
