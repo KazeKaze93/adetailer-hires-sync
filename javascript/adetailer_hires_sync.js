@@ -313,8 +313,10 @@ function armInterruptObserver() {
         if (interruptBtn.style.display === "block") {
             return;
         }
-        if (interruptBtn.style.display === "none" && autoEnabledByScript) {
-            handleGenerationComplete();
+        if (interruptBtn.style.display === "none") {
+            if (autoEnabledByScript || isProcessingQueue) {
+                handleGenerationComplete();
+            }
         }
     });
 
