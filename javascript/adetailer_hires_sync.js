@@ -311,13 +311,15 @@ function armInterruptObserver() {
 
     var generationStarted = false;
 
+    var fired = false;
     interruptObserver = new MutationObserver(function () {
         if (interruptBtn.style.display === "block") {
             generationStarted = true;
             return;
         }
-        if (interruptBtn.style.display === "none" && generationStarted) {
+        if (interruptBtn.style.display === "none" && generationStarted && !fired) {
             if (autoEnabledByScript || isProcessingQueue) {
+                fired = true;
                 handleGenerationComplete();
             }
         }
@@ -379,6 +381,7 @@ onUiLoaded(function () {
         isProcessingQueue = true;
         ev.preventDefault();
         ev.stopImmediatePropagation();
+        selectedIndices = [];
         processNextInQueue();
     });
 });
