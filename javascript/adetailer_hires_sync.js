@@ -7,6 +7,7 @@ var selectedIndices = [];
 var processingQueue = []; // Array of {src: string, idx: number}
 var isProcessingQueue = false;
 var adEnabledBeforeQueue = null; // boolean | null — AD state snapshot before queue starts
+var internalUpscaleClick = false; // true only during programmatic upscale clicks from queue
 
 var ADH_SEL_CLASS = "adhc-sel";
 
@@ -46,6 +47,9 @@ function injectAdhcSelStylesOnce() {
 
 function disconnectInterruptObserver() {
   if (interruptObserver) {
+    if (interruptObserver._pollTimer) {
+      clearInterval(interruptObserver._pollTimer);
+    }
     interruptObserver.disconnect();
     interruptObserver = null;
   }
@@ -235,6 +239,95 @@ function restoreAdStateAfterQueue(root) {
   adEnabledBeforeQueue = null;
 }
 
+function showQueueBadge(remaining) {
+  var badge = document.getElementById("adhc-queue-badge");
+  if (!badge) {
+    badge = document.createElement("span");
+    badge.id = "adhc-queue-badge";
+    badge.style.cssText =
+      "position:fixed;bottom:16px;right:16px;z-index:9999;" +
+      "background:#f97316;color:#fff;font-size:12px;font-weight:600;" +
+      "padding:4px 10px;border-radius:12px;pointer-events:none;" +
+      "box-shadow:0 2px 6px rgba(0,0,0,0.4);";
+    document.body.appendChild(badge);
+  }
+  badge.textContent = "Hires queue: " + remaining + " left";
+}
+
+function hideQueueBadge() {
+  var badge = document.getElementById("adhc-queue-badge");
+  if (badge && badge.parentNode) {
+    badge.parentNode.removeChild(badge);
+  }
+}
+
+// Real mouse event sequence — Svelte/Gradio gallery doesn't update its internal
+// selection state on a synthetic .click(); needs the full pointerdown→mouseup→click chain.
+function simulateClick(el) {
+  if (!el) return;
+  var rect = el.getBoundingClientRect();
+  var opts = {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    button: 0,
+    buttons: 0,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2,
+  };
+  try {
+    el.dispatchEvent(new MouseEvent("pointerdown", opts));
+  } catch (e) {}
+  el.dispatchEvent(new MouseEvent("mousedown", opts));
+  try {
+    el.dispatchEvent(new MouseEvent("pointerup", opts));
+  } catch (e) {}
+  el.dispatchEvent(new MouseEvent("mouseup", opts));
+  el.dispatchEvent(new MouseEvent("click", opts));
+}
+
+// The big preview image — the one NOT inside the .thumbnails strip.
+// This is what #txt2img_upscale actually operates on.
+function getMainViewerImage(root) {
+  var gallery = root.querySelector("#txt2img_gallery");
+  if (!gallery) return null;
+  var imgs = gallery.querySelectorAll("img");
+  var i;
+  for (i = 0; i < imgs.length; i++) {
+    var inThumbs =
+      imgs[i].closest &&
+      (imgs[i].closest(".thumbnails") ||
+        imgs[i].closest("[class*='thumbnails']"));
+    if (!inThumbs) {
+      return imgs[i];
+    }
+  }
+  return imgs.length > 0 ? imgs[0] : null;
+}
+
+// Polls the main viewer until it shows the expected src, then runs callback(true).
+// Bails after ~2s with callback(false) so the queue doesn't deadlock.
+function waitForMainViewerSrc(expectedSrc, callback, attempts) {
+  attempts = attempts || 0;
+  if (attempts > 20) {
+    callback(false);
+    return;
+  }
+  var root = gradioApp();
+  if (!root) {
+    callback(false);
+    return;
+  }
+  var mainImg = getMainViewerImage(root);
+  if (mainImg && mainImg.src === expectedSrc) {
+    callback(true);
+    return;
+  }
+  setTimeout(function () {
+    waitForMainViewerSrc(expectedSrc, callback, attempts + 1);
+  }, 100);
+}
+
 function processNextInQueue() {
   var root = gradioApp();
   var gallery = root ? root.querySelector("#txt2img_gallery") : null;
@@ -242,6 +335,7 @@ function processNextInQueue() {
 
   if (processingQueue.length === 0) {
     isProcessingQueue = false;
+    hideQueueBadge();
 
     // Restore AD to the exact state it had before the queue was built.
     // This is the authoritative reset — per-item autoEnabledByScript
@@ -266,11 +360,13 @@ function processNextInQueue() {
     isProcessingQueue = false;
     adEnabledBeforeQueue = null;
     autoEnabledByScript = false;
-    selectedIndices = []; // Bug 2 fix: was missing, leaving stale selection
+    selectedIndices = [];
+    hideQueueBadge();
     return;
   }
 
   var item = processingQueue.shift();
+  showQueueBadge(processingQueue.length);
 
   // Single DOM query — reused for both src match and index fallback.
   var thumbs = getGalleryThumbnails(root);
@@ -294,14 +390,25 @@ function processNextInQueue() {
     return;
   }
 
-  thumb.click();
+  // Full mouse-event sequence so Svelte's gallery state actually updates.
+  simulateClick(thumb);
 
-  setTimeout(function () {
+  // Wait until the main viewer img.src matches what we just clicked, THEN fire upscale.
+  // #txt2img_upscale operates on the currently-shown main image, so without this
+  // the hires pass would run on whatever was previously selected.
+  waitForMainViewerSrc(item.src, function (ok) {
     var currentRoot = gradioApp();
     if (!currentRoot) {
       processingQueue = [];
       isProcessingQueue = false;
       adEnabledBeforeQueue = null;
+      return;
+    }
+
+    if (!ok) {
+      // Selection never caught up — skip rather than hires the wrong image.
+      // Falls through to the next item.
+      setTimeout(processNextInQueue, 0);
       return;
     }
 
@@ -319,9 +426,11 @@ function processNextInQueue() {
 
     var upscaleBtn = currentRoot.querySelector("#txt2img_upscale");
     if (upscaleBtn) {
+      internalUpscaleClick = true;
       upscaleBtn.click();
+      internalUpscaleClick = false;
     }
-  }, 250);
+  });
 }
 
 function handleGenerationComplete() {
@@ -353,8 +462,8 @@ function armInterruptObserver() {
     return;
   }
 
-  var interruptBtn = root.querySelector("#txt2img_interrupt");
-  if (!interruptBtn) {
+  var initialBtn = root.querySelector("#txt2img_interrupt");
+  if (!initialBtn) {
     return;
   }
 
@@ -362,24 +471,67 @@ function armInterruptObserver() {
 
   var generationStarted = false;
   var fired = false;
+  var pollTimer = null;
 
+  // Always re-queries the element — Svelte/Gradio may recreate #txt2img_interrupt
+  // on each render, making any closed-over reference go stale silently.
+  function getLiveBtn() {
+    var r = gradioApp();
+    return r ? r.querySelector("#txt2img_interrupt") : null;
+  }
+
+  function isVisible(btn) {
+    if (!btn) return false;
+    if (btn.style.display === "block") return true;
+    var computed = window.getComputedStyle(btn);
+    return computed.display !== "none" && computed.visibility !== "hidden";
+  }
+
+  function onMaybeComplete() {
+    if (fired) return;
+    if (!generationStarted) return;
+    if (autoEnabledByScript || isProcessingQueue) {
+      fired = true;
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      handleGenerationComplete();
+    }
+  }
+
+  // MutationObserver on the initial element as fast-path.
+  // May stop firing if Svelte replaces the node — polling covers that case.
   interruptObserver = new MutationObserver(function () {
-    if (interruptBtn.style.display === "block") {
+    var btn = getLiveBtn();
+    if (isVisible(btn)) {
       generationStarted = true;
+    } else if (generationStarted) {
+      onMaybeComplete();
+    }
+  });
+  interruptObserver.observe(initialBtn, {
+    attributes: true,
+    attributeFilter: ["style", "class"],
+  });
+
+  // Polling: re-queries the live element every 250ms.
+  // This is the reliable fallback when the observed node gets replaced.
+  pollTimer = setInterval(function () {
+    if (fired) {
+      clearInterval(pollTimer);
+      pollTimer = null;
       return;
     }
-    if (interruptBtn.style.display === "none" && generationStarted && !fired) {
-      if (autoEnabledByScript || isProcessingQueue) {
-        fired = true;
-        handleGenerationComplete();
-      }
+    var btn = getLiveBtn();
+    if (isVisible(btn)) {
+      generationStarted = true;
+    } else if (generationStarted) {
+      onMaybeComplete();
     }
-  });
+  }, 250);
 
-  interruptObserver.observe(interruptBtn, {
-    attributes: true,
-    attributeFilter: ["style"],
-  });
+  interruptObserver._pollTimer = pollTimer;
 }
 
 onUiLoaded(function () {
@@ -400,7 +552,16 @@ onUiLoaded(function () {
   injectGallerySelectionCheckboxes();
 
   hiresButton.addEventListener("click", function (ev) {
+    // Allow programmatic clicks from processNextInQueue through unconditionally.
+    if (internalUpscaleClick) {
+      return;
+    }
+
     if (isProcessingQueue) {
+      // Block manual user interaction while queue is running —
+      // a user click here would trigger a duplicate generation pass.
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
       return;
     }
 
@@ -455,6 +616,7 @@ onUiLoaded(function () {
 
     processingQueue = queueItems;
     isProcessingQueue = true;
+    showQueueBadge(queueItems.length);
     ev.preventDefault();
     ev.stopImmediatePropagation();
     selectedIndices = [];
