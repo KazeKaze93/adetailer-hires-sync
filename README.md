@@ -49,7 +49,9 @@ Clone or download this repo into your `extensions/` folder, then restart the Web
 
 ## How it works
 
-Pure frontend — no Python backend. One JS file is loaded via the standard WebUI script mechanism (`javascript/adetailer_hires_sync.js`, ES5-compatible).
+Frontend (`javascript/adetailer_hires_sync.js`, ES5): manages the ADetailer checkbox around `#txt2img_upscale` (✨), gallery multi-select queue, and completion via `#txt2img_interrupt`.
+
+Backend (`scripts/adetailer_hires_sync.py` + `prompt_resolve.py`): patches `modules.txt2img.txt2img_upscale_function` so the second pass uses the selected image's expanded `all_prompts[k]` / `all_negative_prompts[k]` (and seeds) from `generation_info`, instead of re-reading the wildcard template from the prompt field. Empty ADetailer `ad_prompt` then inherits the same expanded `p.prompt`. If `generation_info` is missing/empty or the gallery index is out of range, stock behaviour is kept and a warning is logged.
 
 - **`#txt2img_upscale`** (✨): click handler enables ADetailer when unchecked (tracks `autoEnabledByScript`), arms completion observer, or starts multi-thumb queue processing when applicable.
 - **`[id*="adetailer"] input[type="checkbox"]`**: ADetailer enable toggle (clicked only when the script decides to turn it on for hires).
